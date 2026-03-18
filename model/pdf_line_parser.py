@@ -34,6 +34,7 @@ class ParsedLine:
 
 CSV_FIELDS = list(ParsedLine.__dataclass_fields__.keys())
 
+
 SECTION_HEADERS = {
     "NBA - GAME LINES": ("NBA", "FULL"),
     "NBA - 1H": ("NBA", "1H"),
@@ -51,291 +52,170 @@ SECTION_HEADERS = {
     "NHL - 1ST PERIOD": ("NHL", "1P"),
 }
 
+
 JUNK_PATTERNS = [
-    r"^PLEASE SELECT YOUR BETS$",
+    r"^PLEASE SELECT YOUR BETS",
     r"^USER ID:",
     r"^BALANCE:",
     r"^AVAILABLE:",
     r"^AT RISK:",
     r"^FREE PLAY:",
-    r"^https?://",
-    r"^\d+/\d+/\d+,",
-    r"^DATE TEAM SPREAD TOTAL M LINE$",
     r"^LINES FROM:",
-    r"^SPORTSBOOK$",
-    r"^MENU$",
-    r"^\d+/\d+$",
-    r"^\d{1,2}:\d{2}\s*PM$",
-    r"^MAR \d+ \d+$",
+    r"^\d+/\d+/\d+",
+    r"^DATE TEAM SPREAD TOTAL M LINE",
     r"^\d+$",
+    r"^\d{1,2}:\d{2}\s*PM$",
 ]
 
+
 ODDS_LINE_RE = re.compile(r"^[+-]")
+
 SPREAD_TOTAL_RE = re.compile(
     r"""
-    (?P<spread>[+-]\d+(?:[½\.]\d+)?)
+    (?P<spread>[+-]\d+(?:\.\d+)?)
     (?P<spread_odds>[+-]\d{3})?
-    (?:\s+(?P<ou>[ou])(?P<total>\d+(?:[½\.]\d+)?)(?P<total_odds>[+-]\d{3}))?
+    (?:\s+(?P<ou>[ou])(?P<total>\d+(?:\.\d+)?)(?P<total_odds>[+-]\d{3}))?
     (?:\s+(?P<moneyline>[+-]\d{3,4}))?
     """,
     re.VERBOSE | re.I,
 )
 
 
-def normalize_line(line: str) -> str:
-    return (
-        line.replace("\xa0", " ")
-        .replace("½", ".5")
-        .replace("–", "-")
-        .replace("—", "-")
-        .strip()
-    )
+def normalize(line: str) -> str:
+    return line.replace("½", ".5").strip()
 
 
 def is_junk(line: str) -> bool:
-    if not line:
-        return True
-    upper = normalize_line(line).upper()
-    for pat in JUNK_PATTERNS:
-        if re.match(pat, upper):
+    for p in JUNK_PATTERNS:
+        if re.match(p, line.upper()):
             return True
     return False
 
 
 def detect_section(line: str):
-    upper = normalize_line(line).upper()
-    for key, value in SECTION_HEADERS.items():
-        if key in upper:
-            return value
+    for key, val in SECTION_HEADERS.items():
+        if key in line.upper():
+            return val
     return None
 
 
-def clean_team_name(raw: str) -> str:
-    s = normalize_line(raw)
-    s = re.sub(r"\bC\s+MORE BETS\b", "", s, flags=re.I)
-    s = re.sub(r"\bMORE BETS\b", "", s, flags=re.I)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+def clean_team(line: str) -> str:
+    line = re.sub(r"C\s+MORE BETS", "", line)
+    return line.strip()
 
 
-def looks_like_plain_team(line: str) -> bool:
-    s = clean_team_name(line)
-    if not s:
-        return False
-    upper = s.upper()
-
-    banned = [
-        "NBA - GAME LINES",
-        "NBA - 1H",
-        "NBA - QUARTERS",
-        "NCAAB - GAME LINES",
-        "NCAAB - 1H",
-        "MLB - GAME LINES",
-        "NFL - GAME LINES",
-        "NCAAF - GAME LINES",
-        "NHL - GAME LINES",
-        "LINES FROM:",
-        "DATE TEAM SPREAD TOTAL M LINE",
-    ]
-    if any(b in upper for b in banned):
-        return False
-
-    if ODDS_LINE_RE.match(s):
-        return False
-
-    # Accept standalone team-name style rows
-    return bool(re.match(r"^[A-Z0-9 .&'()/:-]+$", upper))
-
-
-def parse_odds_line(line: str) -> dict:
-    line = normalize_line(line)
-    result = {
-        "spread": "",
-        "spread_odds": "",
-        "total": "",
-        "total_side": "",
-        "total_odds": "",
-        "moneyline": "",
-    }
-
+def parse_odds(line: str):
     m = SPREAD_TOTAL_RE.search(line)
     if not m:
-        return result
-
-    result["spread"] = m.group("spread") or ""
-    result["spread_odds"] = m.group("spread_odds") or ""
-    result["total"] = m.group("total") or ""
-    result["total_side"] = (m.group("ou") or "").lower()
-    result["total_odds"] = m.group("total_odds") or ""
-    result["moneyline"] = m.group("moneyline") or ""
-    return result
-
-
-def split_sections(lines: list[str]):
-    sections = []
-    current_sport = ""
-    current_market = ""
-    buffer = []
-
-    for raw in lines:
-        line = normalize_line(raw)
-        if is_junk(line):
-            continue
-
-        section = detect_section(line)
-        if section:
-            if current_sport and buffer:
-                sections.append((current_sport, current_market, buffer))
-            current_sport, current_market = section
-            buffer = []
-            continue
-
-        if current_sport:
-            buffer.append(line)
-
-    if current_sport and buffer:
-        sections.append((current_sport, current_market, buffer))
-
-    return sections
+        return {}
+    return {
+        "spread": m.group("spread") or "",
+        "spread_odds": m.group("spread_odds") or "",
+        "total": m.group("total") or "",
+        "total_side": m.group("ou") or "",
+        "total_odds": m.group("total_odds") or "",
+        "moneyline": m.group("moneyline") or "",
+    }
 
 
-def parse_section(sport: str, market: str, lines: list[str], source_name: str):
-    team_lines = []
-    odds_lines = []
+def parse_section(sport, market, lines, source):
+    teams = []
+    odds = []
 
     for line in lines:
         if is_junk(line):
             continue
-        if ODDS_LINE_RE.match(line.strip()):
-            odds_lines.append(line)
-        elif looks_like_plain_team(line):
-            team_lines.append(clean_team_name(line))
+        if ODDS_LINE_RE.match(line):
+            odds.append(line)
+        else:
+            if len(line) > 3:
+                teams.append(clean_team(line))
 
     rows = []
-    game_count = min(len(team_lines) // 2, len(odds_lines) // 2)
+    n = min(len(teams)//2, len(odds)//2)
 
-    for i in range(game_count):
-        team_a = team_lines[i * 2]
-        team_b = team_lines[i * 2 + 1]
+    for i in range(n):
+        t1 = teams[i*2]
+        t2 = teams[i*2+1]
 
-        odds_a = parse_odds_line(odds_lines[i * 2])
-        odds_b = parse_odds_line(odds_lines[i * 2 + 1])
+        o1 = parse_odds(odds[i*2])
+        o2 = parse_odds(odds[i*2+1])
 
-        spread_a = odds_a["spread"]
-        spread_b = odds_b["spread"]
-
-        def valid_spread(x: str) -> bool:
-            if not x:
-                return True
-            try:
-                return abs(float(x)) <= 30
-            except Exception:
-                return False
-
-        if not valid_spread(spread_a) or not valid_spread(spread_b):
-            continue
-
-        total = odds_a["total"] or odds_b["total"]
-        over_odds = odds_a["total_odds"] if odds_a["total_side"] == "o" else ""
-        under_odds = odds_b["total_odds"] if odds_b["total_side"] == "u" else ""
+        # skip broken spreads
+        try:
+            if abs(float(o1.get("spread", 0))) > 30:
+                continue
+        except:
+            pass
 
         rows.append(
             ParsedLine(
-                source_file=source_name,
+                source_file=source,
                 sport=sport,
                 market=market,
-                matchup=f"{team_a} vs {team_b}",
-                team_a=team_a,
-                team_b=team_b,
-                spread_a=spread_a,
-                spread_b=spread_b,
-                spread_odds_a=odds_a["spread_odds"],
-                spread_odds_b=odds_b["spread_odds"],
-                total=total,
-                over_odds=over_odds,
-                under_odds=under_odds,
-                moneyline_a=odds_a["moneyline"],
-                moneyline_b=odds_b["moneyline"],
-                notes=f"paired_from_section_{market}",
+                matchup=f"{t1} vs {t2}",
+                team_a=t1,
+                team_b=t2,
+                spread_a=o1.get("spread",""),
+                spread_b=o2.get("spread",""),
+                total=o1.get("total",""),
+                moneyline_a=o1.get("moneyline",""),
+                moneyline_b=o2.get("moneyline",""),
             )
         )
 
     return rows
 
 
-def dedupe_rows(rows):
-    seen = set()
-    out = []
-    for row in rows:
-        key = (
-            row.sport,
-            row.market,
-            row.matchup,
-            row.spread_a,
-            row.spread_b,
-            row.total,
-            row.moneyline_a,
-            row.moneyline_b,
-        )
-        if key in seen:
+def parse_pdf_text(text, source):
+    lines = [normalize(x) for x in text.splitlines()]
+
+    sections = []
+    current = []
+    sport, market = None, None
+
+    for line in lines:
+        sec = detect_section(line)
+        if sec:
+            if current:
+                sections.append((sport, market, current))
+            sport, market = sec
+            current = []
             continue
-        seen.add(key)
-        out.append(row)
-    return out
+        current.append(line)
+
+    rows = []
+    for s,m,l in sections:
+        if m in {"FULL","1H","1Q","F5","1P"}:
+            rows += parse_section(s,m,l,source)
+
+    return rows
 
 
-def extract_text_from_pdf(pdf_path: Path) -> str:
-    from pypdf import PdfReader
-
-    reader = PdfReader(str(pdf_path))
-    parts = []
-    for page in reader.pages:
-        parts.append(page.extract_text() or "")
-    return "\n".join(parts)
-
-
-def parse_pdf_text(text: str, source_name: str = "uploaded.pdf"):
-    lines = [normalize_line(x) for x in text.splitlines()]
-    sections = split_sections(lines)
-
-    all_rows = []
-    for sport, market, sec_lines in sections:
-        if market not in {"FULL", "1H", "1Q", "F5", "1P"}:
-            continue
-        all_rows.extend(parse_section(sport, market, sec_lines, source_name))
-
-    return dedupe_rows(all_rows)
-
-
-def write_csv(rows, out_path: Path):
-    with out_path.open("w", newline="", encoding="utf-8") as f:
+def write_csv(rows, path):
+    with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
-        for row in rows:
-            writer.writerow(asdict(row))
-
-
-def parse_pdf_file(pdf_path: Path, out_path: Path = DEFAULT_OUTPUT):
-    text = extract_text_from_pdf(pdf_path)
-    rows = parse_pdf_text(text, source_name=pdf_path.name)
-    write_csv(rows, out_path)
-    return rows
+        for r in rows:
+            writer.writerow(asdict(r))
 
 
 def main():
     import argparse
+    from pypdf import PdfReader
 
-    parser = argparse.ArgumentParser(description="Parse sportsbook PDF into structured lines CSV.")
-    parser.add_argument("pdf_path", help="Path to sportsbook PDF")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output CSV path")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("pdf")
     args = parser.parse_args()
 
-    pdf_path = Path(args.pdf_path)
-    out_path = Path(args.output)
+    reader = PdfReader(args.pdf)
+    text = "\n".join([p.extract_text() or "" for p in reader.pages])
 
-    rows = parse_pdf_file(pdf_path, out_path)
-    print(f"Parsed {len(rows)} rows into {out_path}")
+    rows = parse_pdf_text(text, args.pdf)
+    write_csv(rows, DEFAULT_OUTPUT)
 
+    print(f"Parsed {len(rows)} rows")
+    
 
 if __name__ == "__main__":
     main()
