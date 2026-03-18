@@ -10,85 +10,122 @@ CSV_PATH = DATA_DIR / "parsed_lines.csv"
 OUT_PATH = DATA_DIR / "ranked_card.json"
 
 
-def f(x):
+def to_float(value):
     try:
-        return float(x)
-    except:
-        return 0
+        return float(value)
+    except Exception:
+        return 0.0
 
 
-def project_spread(spread, market):
+def project_spread(spread: float, market: str) -> float:
     factor = 0.65
     if market == "1H":
         factor = 0.58
-    if market == "1Q":
+    elif market == "1Q":
         factor = 0.52
     return spread * factor
 
 
-def project_total(total, market):
+def project_total(total: float, market: str) -> float:
     factor = 0.98
     if market == "1H":
         factor = 0.96
-    if market == "1Q":
+    elif market == "1Q":
         factor = 0.94
     return total * factor
 
 
-def tier(edge):
+def classify_tier(edge: float) -> str:
     if edge > 5.5:
         return "MAX_ELITE"
-    if edge > 4:
+    if edge > 4.0:
         return "ELITE"
     if edge > 2.5:
         return "STRONG"
     return "PASS"
 
 
+def valid_market(market: str) -> bool:
+    return market in {"FULL", "1H", "1Q", "F5", "1P"}
+
+
+def valid_spread(value: float) -> bool:
+    return abs(value) <= 30
+
+
 def run():
     rows = []
 
-    with open(CSV_PATH) as f:
-        reader = csv.DictReader(f)
+    if not CSV_PATH.exists():
+        print(f"Missing parsed CSV: {CSV_PATH}")
+        with open(OUT_PATH, "w", encoding="utf-8") as out_file:
+            json.dump([], out_file, indent=2)
+        return
 
-        for r in reader:
-            t1 = r["team_a"]
-            t2 = r["team_b"]
-            market = r["market"]
+    with open(CSV_PATH, "r", encoding="utf-8") as csv_file:
+        reader = csv.DictReader(csv_file)
 
-            spread = f(r["spread_b"])
-            total = f(r["total"])
+        for record in reader:
+            team_a = str(record.get("team_a", "")).strip()
+            team_b = str(record.get("team_b", "")).strip()
+            market = str(record.get("market", "")).strip().upper()
+            league = str(record.get("sport", "")).strip().upper()
 
-            proj_s = project_spread(spread, market)
-            proj_t = project_total(total, market)
+            if not team_a or not team_b:
+                continue
+            if team_a == team_b:
+                continue
+            if not valid_market(market):
+                continue
 
-            edge_spread = abs(proj_s - spread)
-            edge_total = abs(proj_t - total)
+            spread_a = to_float(record.get("spread_a", "0"))
+            spread_b = to_float(record.get("spread_b", "0"))
+            total = to_float(record.get("total", "0"))
 
-            if edge_total > edge_spread:
-                bet = f"Under {total}"
+            if not valid_spread(spread_a) or not valid_spread(spread_b):
+                continue
+
+            proj_spread = project_spread(spread_b, market)
+            proj_total = project_total(total, market)
+
+            edge_spread = abs(proj_spread - spread_b) if spread_b != 0 else 0.0
+            edge_total = abs(proj_total - total) if total != 0 else 0.0
+
+            if total > 0 and edge_total > edge_spread:
+                if proj_total > total:
+                    best_bet = f"Over {total}"
+                else:
+                    best_bet = f"Under {total}"
+                bet_type = "TOTAL"
                 edge = edge_total
-                btype = "TOTAL"
             else:
-                bet = f"{t2} {spread}"
+                if proj_spread < spread_b:
+                    best_bet = f"{team_a} {spread_a:+}"
+                else:
+                    best_bet = f"{team_b} {spread_b:+}"
+                bet_type = "SPREAD"
                 edge = edge_spread
-                btype = "SPREAD"
 
-            rows.append({
-                "game": f"{t1} vs {t2}",
-                "market": market,
-                "bet_type": btype,
-                "best_bet": bet,
-                "score": round(edge,2),
-                "tier": tier(edge),
-                "win_prob": min(75, 50 + edge*3),
-                "signals": [market, btype]
-            })
+            tier = classify_tier(edge)
+
+            rows.append(
+                {
+                    "game": f"{team_a} vs {team_b}",
+                    "league": league,
+                    "market": market,
+                    "bet_type": bet_type,
+                    "best_bet": best_bet,
+                    "score": round(edge, 2),
+                    "tier": tier,
+                    "win_prob": round(min(75, 50 + edge * 3), 1),
+                    "signals": [market, bet_type],
+                }
+            )
 
     rows = sorted(rows, key=lambda x: x["score"], reverse=True)
 
-    with open(OUT_PATH, "w") as f:
-        json.dump(rows, f, indent=2)
+    with open(OUT_PATH, "w", encoding="utf-8") as out_file:
+        json.dump(rows, out_file, indent=2)
 
     print(f"Wrote {len(rows)} picks")
 
