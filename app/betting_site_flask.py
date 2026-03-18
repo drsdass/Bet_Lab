@@ -236,6 +236,34 @@ def tier_badge(tier: str) -> str:
     return f'<span class="pill {css}">{t}</span>'
 
 
+def market_badge(market: str) -> str:
+    m = (market or "").upper()
+    color = "#334155"
+    if m == "FULL":
+        color = "#1d4ed8"
+    elif m == "1H":
+        color = "#7c3aed"
+    elif m == "1Q":
+        color = "#0f766e"
+    elif m == "F5":
+        color = "#92400e"
+    elif m == "1P":
+        color = "#be123c"
+    return f'<span class="pill" style="background:{color};">{m}</span>'
+
+
+def bet_type_badge(bet_type: str) -> str:
+    b = (bet_type or "").upper()
+    color = "#475569"
+    if b == "SPREAD":
+        color = "#2563eb"
+    elif b == "TOTAL":
+        color = "#059669"
+    elif b == "MONEYLINE":
+        color = "#b45309"
+    return f'<span class="pill" style="background:{color};">{b}</span>'
+
+
 @app.route("/")
 def home():
     return redirect(url_for("dashboard") if session.get("user_email") else url_for("login"))
@@ -275,7 +303,6 @@ def login():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    ranked = load_ranked_card()
     summary = load_roi_summary()
 
     by_tier_rows = ""
@@ -333,7 +360,6 @@ def dashboard():
 def picks():
     ranked = load_ranked_card()
 
-    # Only show real actionable picks by default
     max_elite = [r for r in ranked if r.get("tier") == "MAX_ELITE"]
     elite = [r for r in ranked if r.get("tier") == "ELITE"]
 
@@ -344,9 +370,9 @@ def picks():
             rows += f"""
             <tr>
               <td>{r.get('game')}</td>
-              <td>{r.get('market')}</td>
-              <td>{r.get('bet_type')}</td>
-              <td>{r.get('best_bet')}</td>
+              <td>{market_badge(r.get('market', ''))}</td>
+              <td>{bet_type_badge(r.get('bet_type', ''))}</td>
+              <td><strong>{r.get('best_bet')}</strong></td>
               <td>{tier_badge(r.get('tier', ''))}</td>
               <td>{r.get('score')}</td>
               <td>{r.get('win_prob')}%</td>
@@ -359,6 +385,9 @@ def picks():
     <div class="card">
       <h1>Picks</h1>
       <p><a href="{url_for('dashboard')}">Dashboard</a></p>
+      <p class="subtle">
+        FULL = full game, 1H = first half, 1Q = first quarter, F5 = first 5 innings, 1P = first period
+      </p>
     </div>
 
     <div class="card">
@@ -366,7 +395,14 @@ def picks():
       <table>
         <thead>
           <tr>
-            <th>Game</th><th>Market</th><th>Type</th><th>Pick</th><th>Tier</th><th>Score</th><th>Win Prob</th><th>Signals</th>
+            <th>Game</th>
+            <th>Market</th>
+            <th>Type</th>
+            <th>Pick</th>
+            <th>Tier</th>
+            <th>Score</th>
+            <th>Win Prob</th>
+            <th>Signals</th>
           </tr>
         </thead>
         <tbody>
@@ -380,7 +416,14 @@ def picks():
       <table>
         <thead>
           <tr>
-            <th>Game</th><th>Market</th><th>Type</th><th>Pick</th><th>Tier</th><th>Score</th><th>Win Prob</th><th>Signals</th>
+            <th>Game</th>
+            <th>Market</th>
+            <th>Type</th>
+            <th>Pick</th>
+            <th>Tier</th>
+            <th>Score</th>
+            <th>Win Prob</th>
+            <th>Signals</th>
           </tr>
         </thead>
         <tbody>
@@ -396,19 +439,34 @@ def picks():
 @login_required
 def tracker():
     rows_data = load_tracker_rows()
+
     rows = ""
     for r in rows_data:
+        market = r.get("market", "")
+        pick = r.get("pick", "")
+        tier = r.get("tier", "")
+        result = r.get("result", "")
+        profit = r.get("profit", "")
+        clv = r.get("clv", "")
+        final_score = r.get("final_score", "")
+
+        bet_type = "SPREAD"
+        if str(pick).lower().startswith(("over ", "under ")):
+            bet_type = "TOTAL"
+
         rows += f"""
         <tr>
           <td>{r.get('date')}</td>
           <td>{r.get('game')}</td>
-          <td>{r.get('market')}</td>
-          <td>{r.get('pick')}</td>
-          <td>{r.get('tier')}</td>
+          <td>{market_badge(market)}</td>
+          <td>{bet_type_badge(bet_type)}</td>
+          <td><strong>{pick}</strong></td>
+          <td>{tier_badge(tier)}</td>
           <td>{r.get('stake')}</td>
-          <td>{r.get('result')}</td>
-          <td>{r.get('profit')}</td>
-          <td>{r.get('clv')}</td>
+          <td>{result}</td>
+          <td>{profit}</td>
+          <td>{clv}</td>
+          <td>{final_score}</td>
         </tr>
         """
 
@@ -416,14 +474,27 @@ def tracker():
     <div class="card">
       <h1>Bet Tracker</h1>
       <p><a href="{url_for('dashboard')}">Dashboard</a></p>
+      <p class="subtle">
+        FULL = full game, 1H = first half, 1Q = first quarter, F5 = first 5 innings, 1P = first period
+      </p>
       <table>
         <thead>
           <tr>
-            <th>Date</th><th>Game</th><th>Market</th><th>Pick</th><th>Tier</th><th>Stake</th><th>Result</th><th>Profit</th><th>CLV</th>
+            <th>Date</th>
+            <th>Game</th>
+            <th>Market</th>
+            <th>Type</th>
+            <th>Pick</th>
+            <th>Tier</th>
+            <th>Stake</th>
+            <th>Result</th>
+            <th>Profit</th>
+            <th>CLV</th>
+            <th>Final</th>
           </tr>
         </thead>
         <tbody>
-          {rows or '<tr><td colspan="9">No tracker rows yet.</td></tr>'}
+          {rows or '<tr><td colspan="11">No tracker rows yet.</td></tr>'}
         </tbody>
       </table>
     </div>
