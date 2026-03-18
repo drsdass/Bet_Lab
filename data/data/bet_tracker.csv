@@ -1,1 +1,1 @@
-date,league,game,pick,tier,score,edge_pct,win_prob,result,final_score,clv,roi_units
+date,league,game,market,pick,line,odds,stake,tier,score,edge_pct,win_prob,signals,result,final_score,closing_line,clv,profit,notes
