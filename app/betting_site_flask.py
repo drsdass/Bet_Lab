@@ -58,7 +58,9 @@ def load_ranked_card() -> list[dict]:
         if not raw:
             return []
         data = json.loads(raw)
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        return data
     except Exception:
         return []
 
@@ -143,16 +145,9 @@ def run_subprocess(cmd: list[str]) -> tuple[int, str]:
 
 
 def auto_run_pipeline_for_pdf(pdf_path: Path) -> tuple[bool, str]:
-    """
-    Full pipeline:
-    1. Parse uploaded PDF -> data/parsed_lines.csv
-    2. Run daily model -> data/ranked_card.json
-    3. Auto-track ranked card -> tracker + roi summary
-    """
     python_exec = get_python_exec()
     logs: list[str] = []
 
-    # Step 1: parse PDF
     code, output = run_subprocess(
         [python_exec, "-m", "model.pdf_line_parser", str(pdf_path), "--output", str(PARSED_LINES_PATH)]
     )
@@ -161,14 +156,12 @@ def auto_run_pipeline_for_pdf(pdf_path: Path) -> tuple[bool, str]:
     if code != 0:
         return False, "\n\n".join(logs)
 
-    # Step 2: run model
     code, output = run_subprocess([python_exec, "-m", "model.daily_betting_model"])
     logs.append("=== DAILY MODEL ===")
     logs.append(output or "(no model output)")
     if code != 0:
         return False, "\n\n".join(logs)
 
-    # Step 3: auto-track
     try:
         tracking = auto_track_from_ranked_card(default_date="2026-03-18")
         added = tracking.get("added", 0)
@@ -192,11 +185,11 @@ BASE_HTML = """
   <title>{{ title }}</title>
   <style>
     body { font-family: Arial, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; }
-    .wrap { max-width:1200px; margin:40px auto; padding:24px; }
+    .wrap { max-width:1300px; margin:40px auto; padding:24px; }
     .card { background:#111827; border:1px solid #334155; border-radius:16px; padding:20px; margin-bottom:20px; }
     .btn { display:inline-block; background:#2563eb; color:white; padding:10px 14px; border-radius:10px; text-decoration:none; border:none; cursor:pointer; }
     .btn.secondary { background:#334155; }
-    input { width:100%; padding:10px; border-radius:8px; border:1px solid #475569; background:#0f172a; color:#e2e8f0; }
+    input, select { width:100%; padding:10px; border-radius:8px; border:1px solid #475569; background:#0f172a; color:#e2e8f0; }
     table { width:100%; border-collapse:collapse; }
     th, td { padding:10px; border-bottom:1px solid #334155; text-align:left; vertical-align:top; }
     .flash { padding:12px; margin-bottom:16px; border-radius:10px; }
@@ -206,7 +199,13 @@ BASE_HTML = """
     .grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:16px; }
     .metric { font-size:28px; font-weight:bold; margin-top:8px; }
     .subtle { color:#94a3b8; font-size:14px; }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; margin-right:6px; background:#1e293b; }
+    .pill.max { background:#14532d; }
+    .pill.elite { background:#1d4ed8; }
+    .pill.strong { background:#92400e; }
+    .pill.pass { background:#475569; }
     pre { white-space:pre-wrap; }
+    h2 { margin-top:0; }
     @media (max-width: 900px) {
       .grid { grid-template-columns:repeat(2, 1fr); }
     }
@@ -223,6 +222,18 @@ BASE_HTML = """
 
 def render_page(title: str, body: str) -> str:
     return render_template_string(BASE_HTML, title=title, body=body)
+
+
+def tier_badge(tier: str) -> str:
+    t = (tier or "").upper()
+    css = "pass"
+    if t == "MAX_ELITE":
+        css = "max"
+    elif t == "ELITE":
+        css = "elite"
+    elif t == "STRONG":
+        css = "strong"
+    return f'<span class="pill {css}">{t}</span>'
 
 
 @app.route("/")
@@ -300,30 +311,12 @@ def dashboard():
       <div class="card"><div class="subtle">Profit</div><div class="metric">{summary.get('total_profit', 0.0)}</div></div>
     </div>
 
-    <div class="grid" style="margin-top:16px;">
-      <div class="card"><div class="subtle">Wins</div><div class="metric">{summary.get('wins', 0)}</div></div>
-      <div class="card"><div class="subtle">Losses</div><div class="metric">{summary.get('losses', 0)}</div></div>
-      <div class="card"><div class="subtle">Pushes</div><div class="metric">{summary.get('pushes', 0)}</div></div>
-      <div class="card"><div class="subtle">Avg CLV</div><div class="metric">{summary.get('avg_clv', 0.0)}</div></div>
-    </div>
-
-    <div class="card">
-      <h3>Today’s Ranked Card</h3>
-      <p>Loaded picks: {len(ranked)}</p>
-    </div>
-
     <div class="card">
       <h3>Performance by Tier</h3>
       <table>
         <thead>
           <tr>
-            <th>Tier</th>
-            <th>Bets</th>
-            <th>Graded</th>
-            <th>Wins</th>
-            <th>Losses</th>
-            <th>Pushes</th>
-            <th>Profit</th>
+            <th>Tier</th><th>Bets</th><th>Graded</th><th>Wins</th><th>Losses</th><th>Pushes</th><th>Profit</th>
           </tr>
         </thead>
         <tbody>
@@ -339,32 +332,59 @@ def dashboard():
 @login_required
 def picks():
     ranked = load_ranked_card()
-    rows = ""
-    for r in ranked:
-        signals = ", ".join(r.get("signals", [])) if isinstance(r.get("signals"), list) else r.get("signals", "")
-        rows += f"""
-        <tr>
-          <td>{r.get('game')}</td>
-          <td>{r.get('best_bet')}</td>
-          <td>{r.get('tier')}</td>
-          <td>{r.get('score')}</td>
-          <td>{r.get('win_prob')}%</td>
-          <td>{signals}</td>
-        </tr>
-        """
+
+    # Only show real actionable picks by default
+    max_elite = [r for r in ranked if r.get("tier") == "MAX_ELITE"]
+    elite = [r for r in ranked if r.get("tier") == "ELITE"]
+
+    def build_rows(items: list[dict]) -> str:
+        rows = ""
+        for r in items:
+            signals = ", ".join(r.get("signals", [])) if isinstance(r.get("signals"), list) else str(r.get("signals", ""))
+            rows += f"""
+            <tr>
+              <td>{r.get('game')}</td>
+              <td>{r.get('market')}</td>
+              <td>{r.get('bet_type')}</td>
+              <td>{r.get('best_bet')}</td>
+              <td>{tier_badge(r.get('tier', ''))}</td>
+              <td>{r.get('score')}</td>
+              <td>{r.get('win_prob')}%</td>
+              <td>{signals}</td>
+            </tr>
+            """
+        return rows
 
     body = f"""
     <div class="card">
-      <h1>Today's Elite Bets</h1>
+      <h1>Picks</h1>
       <p><a href="{url_for('dashboard')}">Dashboard</a></p>
+    </div>
+
+    <div class="card">
+      <h2>MAX ELITE</h2>
       <table>
         <thead>
           <tr>
-            <th>Game</th><th>Best Bet</th><th>Tier</th><th>Score</th><th>Win Prob</th><th>Signals</th>
+            <th>Game</th><th>Market</th><th>Type</th><th>Pick</th><th>Tier</th><th>Score</th><th>Win Prob</th><th>Signals</th>
           </tr>
         </thead>
         <tbody>
-          {rows or '<tr><td colspan="6">No picks yet. Upload a PDF to auto-run the system.</td></tr>'}
+          {build_rows(max_elite) or '<tr><td colspan="8">No Max Elite picks.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>ELITE</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Game</th><th>Market</th><th>Type</th><th>Pick</th><th>Tier</th><th>Score</th><th>Win Prob</th><th>Signals</th>
+          </tr>
+        </thead>
+        <tbody>
+          {build_rows(elite) or '<tr><td colspan="8">No Elite picks.</td></tr>'}
         </tbody>
       </table>
     </div>
