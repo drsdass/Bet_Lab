@@ -1,0 +1,5 @@
+date,league,team_a,team_b,spread,total,proj_spread,proj_total,pace,off_eff_a,def_eff_a,off_eff_b,def_eff_b,opening_spread,closing_spread,opening_total,closing_total,public_pct_team_a,public_pct_team_b,public_pct_over,public_pct_under,is_back_to_back,travel_diff,home_advantage,star_out
+2026-03-17,NBA,Miami,Charlotte,-5.5,224,-2.0,228,100,112,109,110,111,-4.5,-5.5,223,224,38,62,54,46,false,0,true,false
+2026-03-17,NBA,Phoenix,Minnesota,3.5,220,1.0,222,98,111,108,109,107,4.5,3.5,219,220,68,32,57,43,false,0,true,false
+2026-03-17,NCAA,Liberty,George Mason,3.5,140,0.5,142,95,108,105,106,104,2.5,3.5,139,140,70,30,49,51,false,0,true,false
+2026-03-17,NCAA,Davidson,Oklahoma State,6.5,148,3.0,151,96,109,106,107,105,5.5,6.5,147,148,66,34,58,42,false,1,true,false

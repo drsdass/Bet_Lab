@@ -1,0 +1,9 @@
+# Betting Lab
+
+Flask dashboard + betting model engine.
+
+## Run locally
+python betting_site_flask.py
+
+## Self test
+SELF_TEST=1 python betting_site_flask.py

@@ -1,0 +1,335 @@
+from __future__ import annotations
+
+import csv
+import json
+import os
+import subprocess
+from functools import wraps
+from pathlib import Path
+from typing import Any
+
+from flask import Flask, flash, redirect, render_template_string, request, session, url_for
+from werkzeug.utils import secure_filename
+
+
+def resolve_base_dir() -> Path:
+    file_value = globals().get("__file__")
+    if file_value:
+        return Path(file_value).resolve().parent.parent
+    return Path(os.getcwd()).resolve()
+
+
+BASE_DIR = resolve_base_dir()
+DATA_DIR = BASE_DIR / "data"
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(exist_ok=True)
+
+RANKED_CARD_PATH = DATA_DIR / "ranked_card.json"
+TRACKER_PATH = DATA_DIR / "bet_tracker.csv"
+
+ALLOWED_EXTENSIONS = {"csv", "pdf", "json"}
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "change-this-in-render")
+
+ADMIN_EMAIL = os.environ.get("APP_LOGIN_EMAIL", "satishsdass@gmail.com")
+ADMIN_PASSWORD = os.environ.get("APP_LOGIN_PASSWORD", "airmail23")
+
+
+def allowed_file(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def load_ranked_card() -> list[dict]:
+    if not RANKED_CARD_PATH.exists():
+        return []
+    with RANKED_CARD_PATH.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_tracker_rows() -> list[dict]:
+    if not TRACKER_PATH.exists():
+        return []
+    with TRACKER_PATH.open("r", newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def tracker_summary(rows: list[dict]) -> dict:
+    graded = [r for r in rows if r.get("result") in {"WIN", "LOSS", "PUSH"}]
+    wins = sum(1 for r in graded if r.get("result") == "WIN")
+    losses = sum(1 for r in graded if r.get("result") == "LOSS")
+    pushes = sum(1 for r in graded if r.get("result") == "PUSH")
+    roi = round(sum(float(r.get("roi_units") or 0.0) for r in graded), 2) if graded else 0.0
+    return {
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "graded_count": len(graded),
+        "roi": roi,
+    }
+
+
+def build_run_output(stdout: str | None, stderr: str | None) -> str:
+    out = stdout or ""
+    if stderr:
+        out += "\n" + stderr
+    return out
+
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_email"):
+            return redirect(url_for("login"))
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+BASE_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; }
+    .wrap { max-width:1100px; margin:40px auto; padding:24px; }
+    .card { background:#111827; border:1px solid #334155; border-radius:16px; padding:20px; margin-bottom:20px; }
+    .btn { display:inline-block; background:#2563eb; color:white; padding:10px 14px; border-radius:10px; text-decoration:none; border:none; cursor:pointer; }
+    .btn.secondary { background:#334155; }
+    input { width:100%; padding:10px; border-radius:8px; border:1px solid #475569; background:#0f172a; color:#e2e8f0; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:10px; border-bottom:1px solid #334155; text-align:left; }
+    .flash { padding:12px; margin-bottom:16px; border-radius:10px; }
+    .error { background:#7f1d1d; }
+    .success { background:#14532d; }
+    a { color:#93c5fd; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  {{ body|safe }}
+</div>
+</body>
+</html>
+"""
+
+
+def render_page(title: str, body: str) -> str:
+    return render_template_string(BASE_HTML, title=title, body=body)
+
+
+@app.route("/")
+def home():
+    return redirect(url_for("dashboard") if session.get("user_email") else url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        if email == ADMIN_EMAIL.lower() and password == ADMIN_PASSWORD:
+            session["user_email"] = email
+            return redirect(url_for("dashboard"))
+        flash("Invalid email or password.", "error")
+
+    body = """
+    <div class="card">
+      <h1>Satish’s Betting Lab</h1>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endwith %}
+      <form method="post">
+        <p>Email</p>
+        <input type="email" name="email" value="satishsdass@gmail.com">
+        <p>Password</p>
+        <input type="password" name="password">
+        <br><br>
+        <button class="btn" type="submit">Sign in</button>
+      </form>
+    </div>
+    """
+    return render_page("Login", render_template_string(body))
+
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    rows = load_tracker_rows()
+    summary = tracker_summary(rows)
+    ranked = load_ranked_card()
+    body = f"""
+    <div class="card">
+      <h1>Dashboard</h1>
+      <p><a href="{url_for('picks')}">Picks</a> |
+      <a href="{url_for('tracker')}">Tracker</a> |
+      <a href="{url_for('uploads')}">Uploads</a> |
+      <a href="{url_for('logout')}">Logout</a></p>
+    </div>
+    <div class="card">
+      <h3>Summary</h3>
+      <p>Ranked picks loaded: {len(ranked)}</p>
+      <p>Graded bets: {summary['graded_count']}</p>
+      <p>ROI: {summary['roi']} units</p>
+      <p>Record: {summary['wins']}-{summary['losses']}-{summary['pushes']}</p>
+    </div>
+    """
+    return render_page("Dashboard", body)
+
+
+@app.route("/picks")
+@login_required
+def picks():
+    ranked = load_ranked_card()
+    rows = ""
+    for r in ranked:
+        rows += f"""
+        <tr>
+          <td>{r.get('game')}</td>
+          <td>{r.get('best_bet')}</td>
+          <td>{r.get('tier')}</td>
+          <td>{r.get('score')}</td>
+          <td>{r.get('win_prob')}%</td>
+          <td>{', '.join(r.get('signals', []))}</td>
+        </tr>
+        """
+    body = f"""
+    <div class="card">
+      <h1>Today's Elite Bets</h1>
+      <p><a href="{url_for('dashboard')}">Dashboard</a></p>
+      <table>
+        <thead>
+          <tr>
+            <th>Game</th><th>Best Bet</th><th>Tier</th><th>Score</th><th>Win Prob</th><th>Signals</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows or '<tr><td colspan="6">No picks yet. Run the model first.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    """
+    return render_page("Picks", body)
+
+
+@app.route("/tracker")
+@login_required
+def tracker():
+    rows_data = load_tracker_rows()
+    rows = ""
+    for r in rows_data:
+        rows += f"""
+        <tr>
+          <td>{r.get('date')}</td>
+          <td>{r.get('game')}</td>
+          <td>{r.get('pick')}</td>
+          <td>{r.get('tier')}</td>
+          <td>{r.get('result')}</td>
+          <td>{r.get('roi_units')}</td>
+        </tr>
+        """
+    body = f"""
+    <div class="card">
+      <h1>Bet Tracker</h1>
+      <p><a href="{url_for('dashboard')}">Dashboard</a></p>
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th><th>Game</th><th>Pick</th><th>Tier</th><th>Result</th><th>ROI</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows or '<tr><td colspan="6">No tracker rows yet.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    """
+    return render_page("Tracker", body)
+
+
+@app.route("/uploads", methods=["GET", "POST"])
+@login_required
+def uploads():
+    if request.method == "POST":
+        file = request.files.get("file")
+        if not file or not file.filename:
+            flash("Please choose a file.", "error")
+            return redirect(url_for("uploads"))
+        if not allowed_file(file.filename):
+            flash("Unsupported file type.", "error")
+            return redirect(url_for("uploads"))
+        filename = secure_filename(file.filename)
+        file.save(UPLOAD_DIR / filename)
+        flash(f"Uploaded {filename}", "success")
+        return redirect(url_for("uploads"))
+
+    uploaded = sorted(UPLOAD_DIR.iterdir()) if UPLOAD_DIR.exists() else []
+    uploaded_html = "".join(f"<li>{p.name}</li>" for p in uploaded if p.is_file())
+    run_output = session.pop("run_output", "")
+
+    body = f"""
+    <div class="card">
+      <h1>Uploads</h1>
+      <p><a href="{url_for('dashboard')}">Dashboard</a></p>
+      {{% with messages = get_flashed_messages(with_categories=true) %}}
+        {{% for category, message in messages %}}
+          <div class="flash {{{{ category }}}}">{{{{ message }}}}</div>
+        {{% endfor %}}
+      {{% endwith %}}
+      <form method="post" enctype="multipart/form-data">
+        <input type="file" name="file">
+        <br><br>
+        <button class="btn" type="submit">Upload</button>
+      </form>
+      <br>
+      <form method="post" action="{url_for('run_model')}">
+        <button class="btn secondary" type="submit">Run model</button>
+      </form>
+      <br>
+      <h3>Uploaded files</h3>
+      <ul>{uploaded_html or '<li>No files yet.</li>'}</ul>
+      <h3>Run output</h3>
+      <pre>{run_output or 'No run output yet.'}</pre>
+    </div>
+    """
+    return render_page("Uploads", render_template_string(body))
+
+
+@app.route("/run-model", methods=["POST"])
+@login_required
+def run_model():
+    result = subprocess.run(
+        ["python", "-m", "model.daily_betting_model"],
+        cwd=str(BASE_DIR),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    session["run_output"] = build_run_output(result.stdout, result.stderr)
+    flash("Model run completed." if result.returncode == 0 else "Model run failed.", "success" if result.returncode == 0 else "error")
+    return redirect(url_for("uploads"))
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+def safe_run_server() -> None:
+    app.run(
+        host=os.environ.get("HOST", "0.0.0.0"),
+        port=int(os.environ.get("PORT", "5000")),
+        debug=False,
+        use_debugger=False,
+        use_reloader=False,
+        threaded=True,
+    )
+
+
+if __name__ == "__main__":
+    safe_run_server()
