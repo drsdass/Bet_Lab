@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: betting-lab
+    env: python
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python3 -m app.betting_site_flask
