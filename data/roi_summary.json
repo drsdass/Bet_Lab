@@ -1,0 +1,14 @@
+{
+  "total_bets": 0,
+  "graded_bets": 0,
+  "wins": 0,
+  "losses": 0,
+  "pushes": 0,
+  "pending": 0,
+  "total_staked": 0.0,
+  "total_profit": 0.0,
+  "roi_pct": 0.0,
+  "avg_edge_pct": 0.0,
+  "avg_clv": 0.0,
+  "by_tier": {}
+}
