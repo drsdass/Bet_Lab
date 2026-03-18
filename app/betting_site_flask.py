@@ -11,6 +11,8 @@ from typing import Any
 from flask import Flask, flash, redirect, render_template_string, request, session, url_for
 from werkzeug.utils import secure_filename
 
+from model.auto_bet_tracker import auto_track_from_ranked_card, build_roi_summary
+
 
 def resolve_base_dir() -> Path:
     file_value = globals().get("__file__")
@@ -22,11 +24,13 @@ def resolve_base_dir() -> Path:
 BASE_DIR = resolve_base_dir()
 DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = BASE_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+
 DATA_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 RANKED_CARD_PATH = DATA_DIR / "ranked_card.json"
 TRACKER_PATH = DATA_DIR / "bet_tracker.csv"
+ROI_SUMMARY_PATH = DATA_DIR / "roi_summary.json"
 
 ALLOWED_EXTENSIONS = {"csv", "pdf", "json"}
 
@@ -44,30 +48,79 @@ def allowed_file(filename: str) -> bool:
 def load_ranked_card() -> list[dict]:
     if not RANKED_CARD_PATH.exists():
         return []
-    with RANKED_CARD_PATH.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        raw = RANKED_CARD_PATH.read_text(encoding="utf-8").strip()
+        if not raw:
+            return []
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 def load_tracker_rows() -> list[dict]:
     if not TRACKER_PATH.exists():
         return []
-    with TRACKER_PATH.open("r", newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    try:
+        with TRACKER_PATH.open("r", newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
 
 
-def tracker_summary(rows: list[dict]) -> dict:
-    graded = [r for r in rows if r.get("result") in {"WIN", "LOSS", "PUSH"}]
-    wins = sum(1 for r in graded if r.get("result") == "WIN")
-    losses = sum(1 for r in graded if r.get("result") == "LOSS")
-    pushes = sum(1 for r in graded if r.get("result") == "PUSH")
-    roi = round(sum(float(r.get("roi_units") or 0.0) for r in graded), 2) if graded else 0.0
-    return {
-        "wins": wins,
-        "losses": losses,
-        "pushes": pushes,
-        "graded_count": len(graded),
-        "roi": roi,
-    }
+def load_roi_summary() -> dict[str, Any]:
+    if not ROI_SUMMARY_PATH.exists():
+        summary = build_roi_summary()
+        return {
+            "total_bets": summary.total_bets,
+            "graded_bets": summary.graded_bets,
+            "wins": summary.wins,
+            "losses": summary.losses,
+            "pushes": summary.pushes,
+            "pending": summary.pending,
+            "total_staked": summary.total_staked,
+            "total_profit": summary.total_profit,
+            "roi_pct": summary.roi_pct,
+            "avg_edge_pct": summary.avg_edge_pct,
+            "avg_clv": summary.avg_clv,
+            "by_tier": summary.by_tier,
+        }
+    try:
+        raw = ROI_SUMMARY_PATH.read_text(encoding="utf-8").strip()
+        if not raw:
+            summary = build_roi_summary()
+            return {
+                "total_bets": summary.total_bets,
+                "graded_bets": summary.graded_bets,
+                "wins": summary.wins,
+                "losses": summary.losses,
+                "pushes": summary.pushes,
+                "pending": summary.pending,
+                "total_staked": summary.total_staked,
+                "total_profit": summary.total_profit,
+                "roi_pct": summary.roi_pct,
+                "avg_edge_pct": summary.avg_edge_pct,
+                "avg_clv": summary.avg_clv,
+                "by_tier": summary.by_tier,
+            }
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        summary = build_roi_summary()
+        return {
+            "total_bets": summary.total_bets,
+            "graded_bets": summary.graded_bets,
+            "wins": summary.wins,
+            "losses": summary.losses,
+            "pushes": summary.pushes,
+            "pending": summary.pending,
+            "total_staked": summary.total_staked,
+            "total_profit": summary.total_profit,
+            "roi_pct": summary.roi_pct,
+            "avg_edge_pct": summary.avg_edge_pct,
+            "avg_clv": summary.avg_clv,
+            "by_tier": summary.by_tier,
+        }
 
 
 def build_run_output(stdout: str | None, stderr: str | None) -> str:
@@ -94,17 +147,24 @@ BASE_HTML = """
   <title>{{ title }}</title>
   <style>
     body { font-family: Arial, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; }
-    .wrap { max-width:1100px; margin:40px auto; padding:24px; }
+    .wrap { max-width:1200px; margin:40px auto; padding:24px; }
     .card { background:#111827; border:1px solid #334155; border-radius:16px; padding:20px; margin-bottom:20px; }
     .btn { display:inline-block; background:#2563eb; color:white; padding:10px 14px; border-radius:10px; text-decoration:none; border:none; cursor:pointer; }
     .btn.secondary { background:#334155; }
     input { width:100%; padding:10px; border-radius:8px; border:1px solid #475569; background:#0f172a; color:#e2e8f0; }
     table { width:100%; border-collapse:collapse; }
-    th, td { padding:10px; border-bottom:1px solid #334155; text-align:left; }
+    th, td { padding:10px; border-bottom:1px solid #334155; text-align:left; vertical-align:top; }
     .flash { padding:12px; margin-bottom:16px; border-radius:10px; }
     .error { background:#7f1d1d; }
     .success { background:#14532d; }
     a { color:#93c5fd; }
+    .grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:16px; }
+    .metric { font-size:28px; font-weight:bold; margin-top:8px; }
+    .subtle { color:#94a3b8; font-size:14px; }
+    pre { white-space:pre-wrap; }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns:repeat(2, 1fr); }
+    }
   </style>
 </head>
 <body>
@@ -159,23 +219,72 @@ def login():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    rows = load_tracker_rows()
-    summary = tracker_summary(rows)
     ranked = load_ranked_card()
+    summary = load_roi_summary()
+
+    by_tier_rows = ""
+    by_tier = summary.get("by_tier", {})
+    for tier, values in by_tier.items():
+        by_tier_rows += f"""
+        <tr>
+          <td>{tier}</td>
+          <td>{values.get('bets', 0)}</td>
+          <td>{values.get('graded', 0)}</td>
+          <td>{values.get('wins', 0)}</td>
+          <td>{values.get('losses', 0)}</td>
+          <td>{values.get('pushes', 0)}</td>
+          <td>{values.get('profit', 0.0)}</td>
+        </tr>
+        """
+
     body = f"""
     <div class="card">
       <h1>Dashboard</h1>
-      <p><a href="{url_for('picks')}">Picks</a> |
-      <a href="{url_for('tracker')}">Tracker</a> |
-      <a href="{url_for('uploads')}">Uploads</a> |
-      <a href="{url_for('logout')}">Logout</a></p>
+      <p>
+        <a href="{url_for('picks')}">Picks</a> |
+        <a href="{url_for('tracker')}">Tracker</a> |
+        <a href="{url_for('uploads')}">Uploads</a> |
+        <a href="{url_for('logout')}">Logout</a>
+      </p>
     </div>
+
+    <div class="grid">
+      <div class="card"><div class="subtle">Total Bets</div><div class="metric">{summary.get('total_bets', 0)}</div></div>
+      <div class="card"><div class="subtle">Graded Bets</div><div class="metric">{summary.get('graded_bets', 0)}</div></div>
+      <div class="card"><div class="subtle">ROI %</div><div class="metric">{summary.get('roi_pct', 0.0)}%</div></div>
+      <div class="card"><div class="subtle">Profit</div><div class="metric">{summary.get('total_profit', 0.0)}</div></div>
+    </div>
+
+    <div class="grid" style="margin-top:16px;">
+      <div class="card"><div class="subtle">Wins</div><div class="metric">{summary.get('wins', 0)}</div></div>
+      <div class="card"><div class="subtle">Losses</div><div class="metric">{summary.get('losses', 0)}</div></div>
+      <div class="card"><div class="subtle">Pushes</div><div class="metric">{summary.get('pushes', 0)}</div></div>
+      <div class="card"><div class="subtle">Avg CLV</div><div class="metric">{summary.get('avg_clv', 0.0)}</div></div>
+    </div>
+
     <div class="card">
-      <h3>Summary</h3>
-      <p>Ranked picks loaded: {len(ranked)}</p>
-      <p>Graded bets: {summary['graded_count']}</p>
-      <p>ROI: {summary['roi']} units</p>
-      <p>Record: {summary['wins']}-{summary['losses']}-{summary['pushes']}</p>
+      <h3>Today’s Ranked Card</h3>
+      <p>Loaded picks: {len(ranked)}</p>
+    </div>
+
+    <div class="card">
+      <h3>Performance by Tier</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Tier</th>
+            <th>Bets</th>
+            <th>Graded</th>
+            <th>Wins</th>
+            <th>Losses</th>
+            <th>Pushes</th>
+            <th>Profit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {by_tier_rows or '<tr><td colspan="7">No tier data yet.</td></tr>'}
+        </tbody>
+      </table>
     </div>
     """
     return render_page("Dashboard", body)
@@ -194,9 +303,10 @@ def picks():
           <td>{r.get('tier')}</td>
           <td>{r.get('score')}</td>
           <td>{r.get('win_prob')}%</td>
-          <td>{', '.join(r.get('signals', []))}</td>
+          <td>{', '.join(r.get('signals', [])) if isinstance(r.get('signals'), list) else r.get('signals', '')}</td>
         </tr>
         """
+
     body = f"""
     <div class="card">
       <h1>Today's Elite Bets</h1>
@@ -226,12 +336,16 @@ def tracker():
         <tr>
           <td>{r.get('date')}</td>
           <td>{r.get('game')}</td>
+          <td>{r.get('market')}</td>
           <td>{r.get('pick')}</td>
           <td>{r.get('tier')}</td>
+          <td>{r.get('stake')}</td>
           <td>{r.get('result')}</td>
-          <td>{r.get('roi_units')}</td>
+          <td>{r.get('profit')}</td>
+          <td>{r.get('clv')}</td>
         </tr>
         """
+
     body = f"""
     <div class="card">
       <h1>Bet Tracker</h1>
@@ -239,11 +353,11 @@ def tracker():
       <table>
         <thead>
           <tr>
-            <th>Date</th><th>Game</th><th>Pick</th><th>Tier</th><th>Result</th><th>ROI</th>
+            <th>Date</th><th>Game</th><th>Market</th><th>Pick</th><th>Tier</th><th>Stake</th><th>Result</th><th>Profit</th><th>CLV</th>
           </tr>
         </thead>
         <tbody>
-          {rows or '<tr><td colspan="6">No tracker rows yet.</td></tr>'}
+          {rows or '<tr><td colspan="9">No tracker rows yet.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -287,7 +401,7 @@ def uploads():
       </form>
       <br>
       <form method="post" action="{url_for('run_model')}">
-        <button class="btn secondary" type="submit">Run model</button>
+        <button class="btn secondary" type="submit">Run model + auto track</button>
       </form>
       <br>
       <h3>Uploaded files</h3>
@@ -302,15 +416,33 @@ def uploads():
 @app.route("/run-model", methods=["POST"])
 @login_required
 def run_model():
+    python_exec = os.environ.get("PYTHON_EXECUTABLE", "/opt/render/project/src/.venv/bin/python")
+
     result = subprocess.run(
-        ["python", "-m", "model.daily_betting_model"],
+        [python_exec, "-m", "model.daily_betting_model"],
         cwd=str(BASE_DIR),
         capture_output=True,
         text=True,
         check=False,
     )
-    session["run_output"] = build_run_output(result.stdout, result.stderr)
-    flash("Model run completed." if result.returncode == 0 else "Model run failed.", "success" if result.returncode == 0 else "error")
+
+    track_msg = ""
+    if result.returncode == 0:
+        try:
+            tracking = auto_track_from_ranked_card(default_date="2026-03-18")
+            added = tracking.get("added", 0)
+            roi = tracking.get("summary", {}).get("roi_pct", 0.0)
+            track_msg = f"\n\nAuto tracker updated. Added {added} bets. Current ROI: {roi}%"
+        except Exception as exc:
+            track_msg = f"\n\nTracker update failed: {exc}"
+
+    session["run_output"] = build_run_output(result.stdout, result.stderr) + track_msg
+
+    if result.returncode == 0:
+        flash("Model run completed.", "success")
+    else:
+        flash("Model run failed.", "error")
+
     return redirect(url_for("uploads"))
 
 
