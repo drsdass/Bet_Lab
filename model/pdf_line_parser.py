@@ -4,7 +4,6 @@ import csv
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import List
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
@@ -35,18 +34,12 @@ class ParsedLine:
 
 CSV_FIELDS = list(ParsedLine.__dataclass_fields__.keys())
 
-
 SECTION_HEADERS = {
     "NBA - GAME LINES": ("NBA", "FULL"),
     "NBA - 1H": ("NBA", "1H"),
     "NBA - QUARTERS FIRST QUARTER LINES": ("NBA", "1Q"),
-    "NBA - QUARTERS SECOND QUARTER LINES": ("NBA", "2Q"),
-    "NBA - QUARTERS THIRD QUARTER LINES": ("NBA", "3Q"),
-    "NBA - QUARTERS FOURTH QUARTER LINES": ("NBA", "4Q"),
     "NCAAB - GAME LINES": ("NCAAB", "FULL"),
     "NCAAB - 1H": ("NCAAB", "1H"),
-    "NCAAB - 2H": ("NCAAB", "2H"),
-    "NCAAB - FIRST HALF LINES": ("NCAAB", "1H"),
     "MLB - GAME LINES": ("MLB", "FULL"),
     "MLB - 1ST 5": ("MLB", "F5"),
     "NFL - GAME LINES": ("NFL", "FULL"),
@@ -56,8 +49,6 @@ SECTION_HEADERS = {
     "NCAAF - 1H": ("NCAAF", "1H"),
     "NHL - GAME LINES": ("NHL", "FULL"),
     "NHL - 1ST PERIOD": ("NHL", "1P"),
-    "NHL - 2ND PERIOD": ("NHL", "2P"),
-    "NHL - 3RD PERIOD": ("NHL", "3P"),
 }
 
 JUNK_PATTERNS = [
@@ -74,15 +65,12 @@ JUNK_PATTERNS = [
     r"^SPORTSBOOK$",
     r"^MENU$",
     r"^\d+/\d+$",
+    r"^\d{1,2}:\d{2}\s*PM$",
+    r"^MAR \d+ \d+$",
+    r"^\d+$",
 ]
 
-TEAM_LINE_RE = re.compile(
-    r"^(?:MAR \d+\s+)?(?:\d{1,2}:\d{2}\s*PM\s+)?\d+\s+(?:(1H|2H|1Q|2Q|3Q|4Q|1P|2P|3P|F5)\s+)?(.+?)$",
-    re.I,
-)
-
 ODDS_LINE_RE = re.compile(r"^[+-]")
-
 SPREAD_TOTAL_RE = re.compile(
     r"""
     (?P<spread>[+-]\d+(?:[½\.]\d+)?)
@@ -107,11 +95,19 @@ def normalize_line(line: str) -> str:
 def is_junk(line: str) -> bool:
     if not line:
         return True
-    upper = line.upper().strip()
+    upper = normalize_line(line).upper()
     for pat in JUNK_PATTERNS:
         if re.match(pat, upper):
             return True
     return False
+
+
+def detect_section(line: str):
+    upper = normalize_line(line).upper()
+    for key, value in SECTION_HEADERS.items():
+        if key in upper:
+            return value
+    return None
 
 
 def clean_team_name(raw: str) -> str:
@@ -122,26 +118,33 @@ def clean_team_name(raw: str) -> str:
     return s
 
 
-def parse_team_line(line: str) -> str | None:
-    line = normalize_line(line)
-    m = TEAM_LINE_RE.match(line)
-    if not m:
-        return None
-    team = clean_team_name(m.group(2))
-    if not team:
-        return None
+def looks_like_plain_team(line: str) -> bool:
+    s = clean_team_name(line)
+    if not s:
+        return False
+    upper = s.upper()
+
     banned = [
         "NBA - GAME LINES",
         "NBA - 1H",
         "NBA - QUARTERS",
         "NCAAB - GAME LINES",
+        "NCAAB - 1H",
+        "MLB - GAME LINES",
+        "NFL - GAME LINES",
+        "NCAAF - GAME LINES",
+        "NHL - GAME LINES",
         "LINES FROM:",
         "DATE TEAM SPREAD TOTAL M LINE",
     ]
-    upper = team.upper()
     if any(b in upper for b in banned):
-        return None
-    return team
+        return False
+
+    if ODDS_LINE_RE.match(s):
+        return False
+
+    # Accept standalone team-name style rows
+    return bool(re.match(r"^[A-Z0-9 .&'()/:-]+$", upper))
 
 
 def parse_odds_line(line: str) -> dict:
@@ -168,19 +171,11 @@ def parse_odds_line(line: str) -> dict:
     return result
 
 
-def detect_section(line: str) -> tuple[str, str] | None:
-    upper = normalize_line(line).upper()
-    for key, value in SECTION_HEADERS.items():
-        if key in upper:
-            return value
-    return None
-
-
-def split_sections(lines: list[str]) -> list[tuple[str, str, list[str]]]:
-    sections: list[tuple[str, str, list[str]]] = []
+def split_sections(lines: list[str]):
+    sections = []
     current_sport = ""
     current_market = ""
-    buffer: list[str] = []
+    buffer = []
 
     for raw in lines:
         line = normalize_line(raw)
@@ -204,21 +199,19 @@ def split_sections(lines: list[str]) -> list[tuple[str, str, list[str]]]:
     return sections
 
 
-def parse_section(sport: str, market: str, lines: list[str], source_name: str) -> list[ParsedLine]:
-    team_lines: list[str] = []
-    odds_lines: list[str] = []
+def parse_section(sport: str, market: str, lines: list[str], source_name: str):
+    team_lines = []
+    odds_lines = []
 
     for line in lines:
         if is_junk(line):
             continue
         if ODDS_LINE_RE.match(line.strip()):
             odds_lines.append(line)
-        else:
-            team = parse_team_line(line)
-            if team:
-                team_lines.append(team)
+        elif looks_like_plain_team(line):
+            team_lines.append(clean_team_name(line))
 
-    rows: list[ParsedLine] = []
+    rows = []
     game_count = min(len(team_lines) // 2, len(odds_lines) // 2)
 
     for i in range(game_count):
@@ -231,13 +224,11 @@ def parse_section(sport: str, market: str, lines: list[str], source_name: str) -
         spread_a = odds_a["spread"]
         spread_b = odds_b["spread"]
 
-        # Reject obviously broken spreads that are really moneylines
         def valid_spread(x: str) -> bool:
             if not x:
                 return True
             try:
-                value = float(x)
-                return abs(value) <= 30
+                return abs(float(x)) <= 30
             except Exception:
                 return False
 
@@ -272,9 +263,9 @@ def parse_section(sport: str, market: str, lines: list[str], source_name: str) -
     return rows
 
 
-def dedupe_rows(rows: list[ParsedLine]) -> list[ParsedLine]:
+def dedupe_rows(rows):
     seen = set()
-    out: list[ParsedLine] = []
+    out = []
     for row in rows:
         key = (
             row.sport,
@@ -297,19 +288,18 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
     from pypdf import PdfReader
 
     reader = PdfReader(str(pdf_path))
-    parts: list[str] = []
+    parts = []
     for page in reader.pages:
         parts.append(page.extract_text() or "")
     return "\n".join(parts)
 
 
-def parse_pdf_text(text: str, source_name: str = "uploaded.pdf") -> list[ParsedLine]:
+def parse_pdf_text(text: str, source_name: str = "uploaded.pdf"):
     lines = [normalize_line(x) for x in text.splitlines()]
     sections = split_sections(lines)
 
-    all_rows: list[ParsedLine] = []
+    all_rows = []
     for sport, market, sec_lines in sections:
-        # Keep only supported markets for now
         if market not in {"FULL", "1H", "1Q", "F5", "1P"}:
             continue
         all_rows.extend(parse_section(sport, market, sec_lines, source_name))
@@ -317,7 +307,7 @@ def parse_pdf_text(text: str, source_name: str = "uploaded.pdf") -> list[ParsedL
     return dedupe_rows(all_rows)
 
 
-def write_csv(rows: list[ParsedLine], out_path: Path) -> None:
+def write_csv(rows, out_path: Path):
     with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
@@ -325,14 +315,14 @@ def write_csv(rows: list[ParsedLine], out_path: Path) -> None:
             writer.writerow(asdict(row))
 
 
-def parse_pdf_file(pdf_path: Path, out_path: Path = DEFAULT_OUTPUT) -> list[ParsedLine]:
+def parse_pdf_file(pdf_path: Path, out_path: Path = DEFAULT_OUTPUT):
     text = extract_text_from_pdf(pdf_path)
     rows = parse_pdf_text(text, source_name=pdf_path.name)
     write_csv(rows, out_path)
     return rows
 
 
-def main() -> None:
+def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Parse sportsbook PDF into structured lines CSV.")
