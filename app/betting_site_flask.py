@@ -31,7 +31,6 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 RANKED_CARD_PATH = DATA_DIR / "ranked_card.json"
 TRACKER_PATH = DATA_DIR / "bet_tracker.csv"
 ROI_SUMMARY_PATH = DATA_DIR / "roi_summary.json"
-PARSED_LINES_PATH = DATA_DIR / "parsed_lines.csv"
 
 ALLOWED_EXTENSIONS = {"csv", "pdf", "json"}
 
@@ -145,23 +144,32 @@ def run_subprocess(cmd: list[str]) -> tuple[int, str]:
 
 
 def auto_run_pipeline_for_pdf(pdf_path: Path) -> tuple[bool, str]:
+    """
+    Full pipeline:
+    1. Parse uploaded PDF -> data/parsed_lines.csv
+    2. Run daily model -> data/ranked_card.json
+    3. Auto-track ranked card -> tracker + roi summary
+    """
     python_exec = get_python_exec()
     logs: list[str] = []
 
+    # Step 1: parse PDF
     code, output = run_subprocess(
-        [python_exec, "-m", "model.pdf_line_parser", str(pdf_path), "--output", str(PARSED_LINES_PATH)]
+        [python_exec, "-m", "model.pdf_line_parser", str(pdf_path)]
     )
     logs.append("=== PDF PARSER ===")
     logs.append(output or "(no parser output)")
     if code != 0:
         return False, "\n\n".join(logs)
 
+    # Step 2: run model
     code, output = run_subprocess([python_exec, "-m", "model.daily_betting_model"])
     logs.append("=== DAILY MODEL ===")
     logs.append(output or "(no model output)")
     if code != 0:
         return False, "\n\n".join(logs)
 
+    # Step 3: auto-track
     try:
         tracking = auto_track_from_ranked_card(default_date="2026-03-18")
         added = tracking.get("added", 0)
