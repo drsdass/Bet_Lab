@@ -3,145 +3,81 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import List
 
-from model.pro_betting_model import GameInput, evaluate_game
+from model.pro_betting_model import Game, run_model
 
-
-def resolve_repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
-
-
-REPO_ROOT = resolve_repo_root()
+REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
-DATA_DIR.mkdir(exist_ok=True)
 
-INPUT_CSV = DATA_DIR / "sample_games.csv"
-RANKED_CARD_JSON = DATA_DIR / "ranked_card.json"
-TRACKER_CSV = DATA_DIR / "bet_tracker.csv"
+PARSED_CSV = DATA_DIR / "parsed_lines.csv"
+RANKED_JSON = DATA_DIR / "ranked_card.json"
 
 
-def parse_bool(value: str) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+def load_games_from_csv():
+    games = []
 
-
-def parse_optional_float(value: str):
-    value = str(value).strip()
-    if value == "":
-        return None
-    return float(value)
-
-
-def load_games_from_csv(path: Path) -> List[GameInput]:
-    games: List[GameInput] = []
-    with path.open("r", newline="", encoding="utf-8") as f:
+    with PARSED_CSV.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
+
         for row in reader:
+            try:
+                spread = float(row["spread_b"]) if row["spread_b"] else 0
+                total = float(row["total"]) if row["total"] else 0
+            except:
+                continue
+
             games.append(
-                GameInput(
-                    date=row["date"],
-                    league=row["league"],
-                    team_a=row["team_a"],
-                    team_b=row["team_b"],
-                    spread=float(row["spread"]),
-                    total=float(row["total"]),
-                    proj_spread=float(row["proj_spread"]),
-                    proj_total=float(row["proj_total"]),
-                    pace=float(row["pace"]),
-                    off_eff_a=float(row["off_eff_a"]),
-                    def_eff_a=float(row["def_eff_a"]),
-                    off_eff_b=float(row["off_eff_b"]),
-                    def_eff_b=float(row["def_eff_b"]),
-                    opening_spread=parse_optional_float(row.get("opening_spread", "")),
-                    closing_spread=parse_optional_float(row.get("closing_spread", "")),
-                    opening_total=parse_optional_float(row.get("opening_total", "")),
-                    closing_total=parse_optional_float(row.get("closing_total", "")),
-                    public_pct_team_a=parse_optional_float(row.get("public_pct_team_a", "")),
-                    public_pct_team_b=parse_optional_float(row.get("public_pct_team_b", "")),
-                    public_pct_over=parse_optional_float(row.get("public_pct_over", "")),
-                    public_pct_under=parse_optional_float(row.get("public_pct_under", "")),
-                    is_back_to_back=parse_bool(row.get("is_back_to_back", "false")),
-                    travel_diff=int(row.get("travel_diff", 0)),
-                    home_advantage=parse_bool(row.get("home_advantage", "true")),
-                    star_out=parse_bool(row.get("star_out", "false")),
+                Game(
+                    game=row["matchup"],
+                    spread=spread,
+                    total=total,
+                    proj_spread=spread * 0.6,  # placeholder projection
+                    proj_total=total * 0.98,
+                    pace=100,
+                    off_eff_a=110,
+                    def_eff_a=108,
+                    off_eff_b=109,
+                    def_eff_b=109,
+                    league=row["sport"],
                 )
             )
+
     return games
 
 
-def write_ranked_card(rows: list[dict], path: Path) -> None:
-    rows = sorted(rows, key=lambda x: x["score"], reverse=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
+def run():
+    games = load_games_from_csv()
 
+    if not games:
+        print("No games loaded from CSV")
+        return []
 
-def ensure_tracker(path: Path) -> None:
-    if path.exists():
-        return
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "date",
-                "league",
-                "game",
-                "pick",
-                "tier",
-                "score",
-                "edge_pct",
-                "win_prob",
-                "result",
-                "final_score",
-                "clv",
-                "roi_units",
-            ]
+    results = run_model(games)
+
+    output = []
+
+    for r in results:
+        output.append(
+            {
+                "date": "auto",
+                "league": "",
+                "game": r["game"],
+                "best_bet": r["pick"],
+                "tier": r["tier"],
+                "score": r["score"],
+                "edge_pct": r["edge"],
+                "win_prob": round(min(75, 50 + r["score"] * 2), 1),
+                "signals": r["notes"],
+            }
         )
 
+    with RANKED_JSON.open("w") as f:
+        json.dump(output, f, indent=2)
 
-def append_tracker_rows(rows: list[dict], path: Path) -> None:
-    ensure_tracker(path)
-    existing = set()
-    with path.open("r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            existing.add((row["date"], row["game"], row["pick"]))
-
-    with path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        for row in rows:
-            key = (row["date"], row["game"], row["best_bet"])
-            if key in existing:
-                continue
-            writer.writerow(
-                [
-                    row["date"],
-                    row["league"],
-                    row["game"],
-                    row["best_bet"],
-                    row["tier"],
-                    row["score"],
-                    row["edge_pct"],
-                    row["win_prob"],
-                    "PENDING",
-                    "",
-                    "",
-                    "",
-                ]
-            )
-
-
-def run() -> list[dict]:
-    games = load_games_from_csv(INPUT_CSV)
-    rows = [evaluate_game(game) for game in games]
-    write_ranked_card(rows, RANKED_CARD_JSON)
-    append_tracker_rows(rows, TRACKER_CSV)
-    return rows
+    return output
 
 
 if __name__ == "__main__":
-    rows = run()
-    for row in sorted(rows, key=lambda x: x["score"], reverse=True):
-        print(
-            f"{row['game']} | {row['best_bet']} | "
-            f"{row['tier']} | score={row['score']} | win_prob={row['win_prob']}%"
-        )
+    results = run()
+    for r in results:
+        print(r)        
