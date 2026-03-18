@@ -10,7 +10,7 @@ CSV_PATH = DATA_DIR / "parsed_lines.csv"
 OUT_PATH = DATA_DIR / "ranked_card.json"
 
 
-def f(x):
+def to_num(x):
     try:
         return float(x)
     except Exception:
@@ -35,22 +35,25 @@ def project_total(total: float, market: str) -> float:
     return total * factor
 
 
-def valid_game(r: dict) -> bool:
-    game = f"{r.get('team_a', '').strip()} vs {r.get('team_b', '').strip()}"
+def valid_game(row: dict) -> bool:
+    team_a = row.get("team_a", "").strip()
+    team_b = row.get("team_b", "").strip()
+    game = f"{team_a} vs {team_b}"
+
     if " vs " not in game:
         return False
-    if len(r.get("team_a", "").strip()) < 3 or len(r.get("team_b", "").strip()) < 3:
+    if len(team_a) < 3 or len(team_b) < 3:
         return False
 
     bad = ["USER ID", "CONTINUE", "HTTP", "WT=0", "LINES FROM", "PLEASE SELECT"]
     if any(b in game.upper() for b in bad):
         return False
 
-    market = r.get("market", "").strip().upper()
+    market = row.get("market", "").strip().upper()
     if market not in {"FULL", "1H", "1Q", "F5", "1P"}:
         return False
 
-    spread_b = f(r.get("spread_b", ""))
+    spread_b = to_num(row.get("spread_b", ""))
     if abs(spread_b) > 30:
         return False
 
@@ -119,44 +122,43 @@ def build_signals(market: str, bet_type: str, spread: float) -> list[str]:
 def run():
     rows = []
 
-    with open(CSV_PATH, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
+    with open(CSV_PATH, encoding="utf-8") as infile:
+        reader = csv.DictReader(infile)
 
-        for r in reader:
-            if not valid_game(r):
+        for row in reader:
+            if not valid_game(row):
                 continue
 
-            t1 = r["team_a"].strip()
-            t2 = r["team_b"].strip()
-            market = r["market"].strip().upper()
+            team_a = row["team_a"].strip()
+            team_b = row["team_b"].strip()
+            market = row["market"].strip().upper()
 
-            spread_a = f(r.get("spread_a", ""))
-            spread_b = f(r.get("spread_b", ""))
-            total = f(r.get("total", ""))
+            spread_a = to_num(row.get("spread_a", ""))
+            spread_b = to_num(row.get("spread_b", ""))
+            total = to_num(row.get("total", ""))
 
-            best_bet, edge, btype = choose_pick(t1, t2, spread_a, spread_b, total, market)
+            best_bet, edge, bet_type = choose_pick(team_a, team_b, spread_a, spread_b, total, market)
             if not best_bet:
                 continue
 
             rows.append(
                 {
-                    "game": f"{t1} vs {t2}",
+                    "game": f"{team_a} vs {team_b}",
                     "market": market,
-                    "bet_type": btype,
+                    "bet_type": bet_type,
                     "best_bet": best_bet,
                     "score": round(edge, 2),
-                    "tier": tier(edge, market, btype, spread_b),
+                    "tier": tier(edge, market, bet_type, spread_b),
                     "win_prob": round(min(75, 50 + edge * 3), 1),
-                    "signals": build_signals(market, btype, spread_b),
+                    "signals": build_signals(market, bet_type, spread_b),
                 }
             )
 
-    # Keep only actionable rows
     rows = [r for r in rows if r["tier"] in {"MAX_ELITE", "ELITE", "STRONG"}]
     rows = sorted(rows, key=lambda x: x["score"], reverse=True)
 
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
+    with open(OUT_PATH, "w", encoding="utf-8") as outfile:
+        json.dump(rows, outfile, indent=2)
 
     print(f"Wrote {len(rows)} picks")
 
