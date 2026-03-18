@@ -1,1 +1,0 @@
-date,league,game,pick,tier,score,edge_pct,win_prob,result,final_score,clv,roi_units
