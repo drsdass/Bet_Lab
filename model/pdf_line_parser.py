@@ -130,7 +130,6 @@ def parse_team_line(line: str) -> str | None:
     team = clean_team_name(m.group(2))
     if not team:
         return None
-    # ignore obvious non-team text
     banned = [
         "NBA - GAME LINES",
         "NBA - 1H",
@@ -220,7 +219,6 @@ def parse_section(sport: str, market: str, lines: list[str], source_name: str) -
                 team_lines.append(team)
 
     rows: list[ParsedLine] = []
-
     game_count = min(len(team_lines) // 2, len(odds_lines) // 2)
 
     for i in range(game_count):
@@ -229,6 +227,22 @@ def parse_section(sport: str, market: str, lines: list[str], source_name: str) -
 
         odds_a = parse_odds_line(odds_lines[i * 2])
         odds_b = parse_odds_line(odds_lines[i * 2 + 1])
+
+        spread_a = odds_a["spread"]
+        spread_b = odds_b["spread"]
+
+        # Reject obviously broken spreads that are really moneylines
+        def valid_spread(x: str) -> bool:
+            if not x:
+                return True
+            try:
+                value = float(x)
+                return abs(value) <= 30
+            except Exception:
+                return False
+
+        if not valid_spread(spread_a) or not valid_spread(spread_b):
+            continue
 
         total = odds_a["total"] or odds_b["total"]
         over_odds = odds_a["total_odds"] if odds_a["total_side"] == "o" else ""
@@ -242,8 +256,8 @@ def parse_section(sport: str, market: str, lines: list[str], source_name: str) -
                 matchup=f"{team_a} vs {team_b}",
                 team_a=team_a,
                 team_b=team_b,
-                spread_a=odds_a["spread"],
-                spread_b=odds_b["spread"],
+                spread_a=spread_a,
+                spread_b=spread_b,
                 spread_odds_a=odds_a["spread_odds"],
                 spread_odds_b=odds_b["spread_odds"],
                 total=total,
@@ -295,6 +309,9 @@ def parse_pdf_text(text: str, source_name: str = "uploaded.pdf") -> list[ParsedL
 
     all_rows: list[ParsedLine] = []
     for sport, market, sec_lines in sections:
+        # Keep only supported markets for now
+        if market not in {"FULL", "1H", "1Q", "F5", "1P"}:
+            continue
         all_rows.extend(parse_section(sport, market, sec_lines, source_name))
 
     return dedupe_rows(all_rows)
